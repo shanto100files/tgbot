@@ -12,6 +12,7 @@ import { createMetaRouter } from "./src/routes/meta.js";
 import { createStreamRouter } from "./src/routes/stream.js";
 import { createEpisodesRouter } from "./src/routes/episodes.js";
 import { createResolveRouter } from "./src/routes/resolve.js";
+import { createHubcloudRouter } from "./src/routes/hubcloud.js";
 
 const logger = createLogger();
 const app = express();
@@ -55,6 +56,7 @@ app.use("/api/meta", createMetaRouter());
 app.use("/api/stream", createStreamRouter());
 app.use("/api/episodes", createEpisodesRouter());
 app.use("/api/resolve", createResolveRouter());
+app.use("/api/hubcloud", createHubcloudRouter());
 
 // Health check
 app.get("/health", (req, res) => {
