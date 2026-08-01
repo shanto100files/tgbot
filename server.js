@@ -11,6 +11,7 @@ import { createSearchRouter } from "./src/routes/search.js";
 import { createMetaRouter } from "./src/routes/meta.js";
 import { createStreamRouter } from "./src/routes/stream.js";
 import { createEpisodesRouter } from "./src/routes/episodes.js";
+import { createResolveRouter } from "./src/routes/resolve.js";
 
 const logger = createLogger();
 const app = express();
@@ -53,6 +54,7 @@ app.use("/api/search", createSearchRouter());
 app.use("/api/meta", createMetaRouter());
 app.use("/api/stream", createStreamRouter());
 app.use("/api/episodes", createEpisodesRouter());
+app.use("/api/resolve", createResolveRouter());
 
 // Health check
 app.get("/health", (req, res) => {
@@ -75,6 +77,8 @@ app.use((req, res) => {
       "GET  /api/meta/:provider?link=",
       "GET  /api/stream/:provider?link=&type=",
       "GET  /api/episodes/:provider?url=",
+      "GET  /api/resolve?url=",
+      "POST /api/resolve { url, provider }",
       "GET  /health",
     ],
   });
