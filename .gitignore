@@ -1,0 +1,6 @@
+node_modules/
+_providers/
+custom-providers/*/node_modules/
+logs/
+.env
+*.log
