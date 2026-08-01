@@ -6,19 +6,39 @@ export async function getStream({ link, type, signal, providerContext }) {
 
   if (link.includes("generate.php")) {
     try {
-      // Step 1: Extract base64 id from generate.php
-      const urlObj = new URL(link.startsWith("http") ? link : `${BASE_URL}${link}`);
+      // Step 1: Clean link - remove extra text, ensure valid URL
+      let cleanLink = link.trim();
+      
+      // Remove any text after the base64 padding (= or ==)
+      const equalsIndex = cleanLink.indexOf("=");
+      if (equalsIndex !== -1) {
+        // Keep up to 2 padding chars and remove everything after
+        const afterEquals = cleanLink.substring(equalsIndex + 1);
+        const extraChars = afterEquals.replace(/[=]/g, "").length;
+        if (extraChars > 0) {
+          // Has extra chars after padding, likely bad input
+          cleanLink = cleanLink.substring(0, equalsIndex + 1);
+        }
+      }
+
+      // Ensure full URL
+      if (!cleanLink.startsWith("http")) {
+        cleanLink = `${BASE_URL}${cleanLink.startsWith("/") ? "" : "/"}${cleanLink}`;
+      }
+
+      // Parse URL
+      const urlObj = new URL(cleanLink);
       const id = urlObj.searchParams.get("id");
 
       if (!id) {
-        streams.push({ server: "CineFreak", link, type: "mp4", quality: "1080" });
+        streams.push({ server: "CineFreak", link: cleanLink, type: "mp4", quality: "1080" });
         return streams;
       }
 
       // Step 2: Decode base64 to get cinecloud URL
       const cinecloudUrl = Buffer.from(id, "base64").toString("utf-8");
 
-      // Step 3: Fetch cinecloud page to get iframe
+      // Step 3: Fetch cinecloud page
       const res = await axios.get(cinecloudUrl, {
         signal,
         timeout: 20000,
@@ -39,9 +59,8 @@ export async function getStream({ link, type, signal, providerContext }) {
         const videoUrl = iframeUrl.searchParams.get("id");
 
         if (videoUrl) {
-          // Clean up the video URL
           const cleanUrl = decodeURIComponent(videoUrl);
-          
+
           streams.push({
             server: "CineFreak R2",
             link: cleanUrl,
@@ -54,7 +73,7 @@ export async function getStream({ link, type, signal, providerContext }) {
           });
         }
 
-        // Also get subtitle if available
+        // Get subtitle if available
         const subParam = iframeUrl.searchParams.get("sub[0]");
         if (subParam) {
           streams.push({
@@ -64,6 +83,16 @@ export async function getStream({ link, type, signal, providerContext }) {
             quality: "subtitle",
           });
         }
+      }
+
+      // If no streams found, return the cinecloud URL as fallback
+      if (streams.length === 0) {
+        streams.push({
+          server: "CineFreak Cloud",
+          link: cinecloudUrl,
+          type: "mp4",
+          quality: "720",
+        });
       }
     } catch (err) {
       streams.push({
