@@ -81,7 +81,15 @@ async function resolveLink(url, axios, cheerio, provider) {
       }
     }
 
-    // Step 2: Follow redirects with multiple attempts
+    // Step 2: Determine headers based on URL domain
+    const urlHost = (() => { try { return new URL(url).hostname; } catch { return ''; } })();
+    const extraHeaders = {};
+    if (urlHost.includes('hubcloud') || urlHost.includes('nexdrive') || urlHost.includes('cinecloud')) {
+      extraHeaders.Referer = `https://${urlHost}/`;
+      extraHeaders.Origin = `https://${urlHost}`;
+    }
+
+    // Step 3: Follow redirects with multiple attempts
     const attempts = [
       // Attempt 1: Follow all redirects
       async () => {
@@ -92,6 +100,7 @@ async function resolveLink(url, axios, cheerio, provider) {
             "User-Agent":
               "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
             Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            ...extraHeaders,
           },
         });
         return res;
@@ -104,6 +113,7 @@ async function resolveLink(url, axios, cheerio, provider) {
           headers: {
             "User-Agent":
               "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            ...extraHeaders,
           },
         });
         return headRes;
