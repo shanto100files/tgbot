@@ -12,7 +12,7 @@ console.log("📦 Setting up Vega Providers...\n");
 if (!fs.existsSync(providersDir)) {
   console.log("Cloning vega-providers...");
   execSync(
-    "git clone --depth 1 https://github.com/vega-org/vega-providers.git _providers",
+    "git clone --depth 1 https://github.com/Zenda-Cross/vega-providers.git _providers",
     { cwd: __dirname, stdio: "inherit" }
   );
 } else {
