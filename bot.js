@@ -4,8 +4,8 @@ import sharp from "sharp";
 import { getDB, getDownloadLinks, updateResolvedLink, getResolvedLink } from "./src/db.js";
 import { ensureWorkingDomain, detectNewDomainFromRedirect, fixLinkDomain, getDomainCache, setDomainCache } from "./src/domains.js";
 
-// --- Create collage from up to 3 images ---
-async function createCollage(imageUrls) {
+// --- Create collage from up to 3 images with text overlay ---
+async function createCollage(imageUrls, captions = []) {
   const validUrls = imageUrls.filter(u => u && u.startsWith("http")).slice(0, 3);
   if (!validUrls.length) return null;
 
@@ -14,24 +14,26 @@ async function createCollage(imageUrls) {
       validUrls.map(url => axios.get(url, { responseType: "arraybuffer", timeout: 10000 }).then(r => r.data))
     );
 
-    const W = 200, H = 300;
+    const W = 200, H = 300, PAD = 4;
     const count = images.length;
-
-    if (count === 1) {
-      return await sharp(images[0]).resize(W, H, { fit: "cover" }).png().toBuffer();
-    }
-
-    // Create side-by-side collage
-    const totalW = W * count;
-    const collage = sharp({ create: { width: totalW, height: H, channels: 3, background: { r: 0, g: 0, b: 0 } } });
+    const totalW = W * count + PAD * (count - 1);
+    const totalH = H + 40;
 
     const composites = [];
     for (let i = 0; i < count; i++) {
       const resized = await sharp(images[i]).resize(W, H, { fit: "cover" }).toBuffer();
-      composites.push({ input: resized, left: i * W, top: 0 });
+      composites.push({ input: resized, left: i * (W + PAD), top: 0 });
+
+      // Add text overlay (title) if caption provided
+      const cap = (captions[i] || "").slice(0, 25);
+      if (cap) {
+        const svg = `<svg width="${W}" height="40"><rect width="${W}" height="40" fill="rgba(0,0,0,0.7)"/><text x="10" y="28" font-size="16" fill="white" font-family="Arial">${cap.replace(/</g, "&lt;")}</text></svg>`;
+        composites.push({ input: Buffer.from(svg), left: i * (W + PAD), top: H });
+      }
     }
 
-    return await collage.composite(composites).png().toBuffer();
+    return await sharp({ create: { width: totalW, height: totalH, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } })
+      .composite(composites).png().toBuffer();
   } catch (e) {
     console.log(`[COLLAGE] Error: ${e.message}`);
     return null;
@@ -362,39 +364,17 @@ async function handleSearch(chatId, query, forcedType, searchPage = 0) {
 
     const PROV_SHORT = { cinefreak: "CF", vega: "V", hdhub4u: "H4U", "4khdhub": "4K" };
 
-    // Strict relevance filter: all query words must appear in title
-    const queryWords = query.toLowerCase().split(/\s+/).filter(w => w.length > 2);
-    const relevant = posts.filter(p => {
-      const t = p.title.toLowerCase();
-      // Must contain majority of query words (at least 70%)
-      const matchCount = queryWords.filter(w => t.includes(w)).length;
-      return matchCount >= Math.ceil(queryWords.length * 0.7);
-    });
-
-    // Use relevant results for display, fallback to all if nothing matches
-    const displayPosts = relevant.length >= 2 ? relevant : posts;
-    posts = displayPosts;
-
-    // Sort: Bengali first if bangla query, else by relevance
-    if (bangla && posts.length) {
-      posts.sort((a, b) => {
-        if (a.provider === "cinefreak" && b.provider !== "cinefreak") return -1;
-        if (a.provider !== "cinefreak" && b.provider === "cinefreak") return 1;
-        return 0;
-      });
-    }
-
-    if (!posts.length) {
-      return bot.sendMessage(chatId, `😔 *"${esc(query)}"* - আর কোনো result নেই।`, { parse_mode: "Markdown" });
-    }
-
-    // Collect unique images from RELEVANT results only
+    // Collect unique images from results
     const seen = new Set();
     const collageImages = [];
+    const collageCaptions = [];
     for (const p of posts) {
       if (p.image && !seen.has(p.image)) {
         seen.add(p.image);
         collageImages.push(p.image);
+        // Short title for overlay
+        const shortTitle = p.title.replace(/\s*[-–|].*$/, "").trim().slice(0, 22);
+        collageCaptions.push(shortTitle);
         if (collageImages.length === 3) break;
       }
     }
@@ -402,9 +382,9 @@ async function handleSearch(chatId, query, forcedType, searchPage = 0) {
     const banglaTag = bangla ? " [BD]" : "";
     const text = `✅ *"${esc(query)}"*${banglaTag} - ${posts.length}টি result\n\nসিলেক্ট করো:`;
 
-    // Build buttons (max 20)
+    // Build buttons (max 15)
     const buttons = [];
-    for (const post of posts.slice(0, 20)) {
+    for (const post of posts.slice(0, 15)) {
       const prov = PROV_SHORT[post.provider] || post.provider?.slice(0, 3) || "?";
       const lang = extractLanguage(post.title);
       const langTag = lang ? ` [${lang}]` : "";
@@ -413,9 +393,15 @@ async function handleSearch(chatId, query, forcedType, searchPage = 0) {
       buttons.push([{ text: label, callback_data: `d:${id}` }]);
     }
 
+    // Load More button if there are more results
+    if (posts.length >= 15) {
+      const moreId = save({ query, searchPage: (searchPage || 0) + 1 });
+      buttons.push([{ text: `🔄 Load More (${posts.length}+ results)`, callback_data: `more:${moreId}` }]);
+    }
+
     // Try collage (need 2+ images)
     if (collageImages.length >= 2) {
-      const collageBuf = await createCollage(collageImages);
+      const collageBuf = await createCollage(collageImages, collageCaptions);
       if (collageBuf) {
         await bot.sendPhoto(chatId, collageBuf, {
           caption: text,

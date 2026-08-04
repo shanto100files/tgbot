@@ -33,25 +33,15 @@ export async function getMeta({ link, provider, signal, providerContext }) {
     const href = $(el).attr("href");
     if (!href) return;
 
+    // Skip "Watch Online" links - only keep download links
+    const linkText = $(el).text().trim();
+    if (/watch\s*online/i.test(linkText)) return;
+
     let epInfo = "";
     let qualityInfo = "";
+    let sizeInfo = "";
 
-    // Get quality from link's own text first (e.g., "HD 720p", "SD 480p")
-    const linkText = $(el).text().trim();
-    const linkQMatch = linkText.match(/\b(SD|HD|FHD|UHD)?\s*(480p|720p|1080p|2160p|4K)\b/i);
-    if (linkQMatch) qualityInfo = linkQMatch[0].trim();
-
-    // Also try the quality-box/container around the link
-    if (!qualityInfo) {
-      const qualityBox = $(el).closest(".quality-grid, .quality-box");
-      if (qualityBox.length) {
-        const qText = qualityBox.text().replace(/\s+/g, " ");
-        const qMatch = qText.match(/\b(SD|HD|FHD|UHD)?\s*(480p|720p|1080p|2160p|4K)\b/i);
-        if (qMatch) qualityInfo = qMatch[0].trim();
-      }
-    }
-
-    // Walk up to .ep-card for episode info
+    // 1. Try .ep-card for episode info only (quality from link text or h4 sibling)
     const card = $(el).closest(".ep-card");
     if (card.length) {
       const cardText = card.text().replace(/\s+/g, " ");
@@ -63,8 +53,39 @@ export async function getMeta({ link, provider, signal, providerContext }) {
       }
     }
 
+    // 2. Quality from link's own text (e.g., "HD 720p", "SD 480p")
+    const linkQMatch = linkText.match(/\b(SD|HD|FHD|UHD)?\s*(480p|720p|1080p|2160p|4K)\b/i);
+    if (linkQMatch) qualityInfo = linkQMatch[0].trim();
+
+    // 3. Quality from quality-box (series pages)
+    if (!qualityInfo) {
+      const qualityBox = $(el).closest(".quality-grid, .quality-box");
+      if (qualityBox.length) {
+        const qText = qualityBox.text().replace(/\s+/g, " ");
+        const qMatch = qText.match(/\b(SD|HD|FHD|UHD)?\s*(480p|720p|1080p|2160p|4K)\b/i);
+        if (qMatch) qualityInfo = qMatch[0].trim();
+      }
+    }
+
+    // 4. Quality from h4.movie-title sibling (movie pages)
+    if (!qualityInfo) {
+      const dlbtnContainer = $(el).closest(".dlbtn-container");
+      if (dlbtnContainer.length) {
+        const prevH4 = dlbtnContainer.prev("h4.movie-title, h4");
+        if (prevH4.length) {
+          const h4Text = prevH4.text().replace(/\s+/g, " ");
+          const qMatch = h4Text.match(/\b(SD|HD|FHD|UHD)?\s*(480p|720p|1080p|2160p|4K)\b/i);
+          if (qMatch) qualityInfo = qMatch[0].trim();
+          const sMatch = h4Text.match(/\[([\d.]+\s*[KMGT]B)\]/i);
+          if (sMatch) sizeInfo = sMatch[1];
+        }
+      }
+    }
+
+    // Build title
     let linkTitle = epInfo || qualityInfo || "Download";
     if (epInfo && qualityInfo) linkTitle = `${epInfo} • ${qualityInfo}`;
+    if (sizeInfo) linkTitle += ` [${sizeInfo}]`;
 
     directLinks.push({
       title: linkTitle,
