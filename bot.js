@@ -5,7 +5,7 @@ import { getDB, getDownloadLinks, updateResolvedLink, getResolvedLink } from "./
 import { ensureWorkingDomain, detectNewDomainFromRedirect, fixLinkDomain, getDomainCache, setDomainCache } from "./src/domains.js";
 
 // --- Create collage from up to 3 images with text overlay ---
-async function createCollage(imageUrls, captions = []) {
+async function createCollage(imageUrls, captions = [], rating = "") {
   const validUrls = imageUrls.filter(u => u && u.startsWith("http")).slice(0, 3);
   if (!validUrls.length) return null;
 
@@ -24,12 +24,19 @@ async function createCollage(imageUrls, captions = []) {
       const resized = await sharp(images[i]).resize(W, H, { fit: "cover" }).toBuffer();
       composites.push({ input: resized, left: i * (W + PAD), top: 0 });
 
-      // Add text overlay (title) if caption provided
-      const cap = (captions[i] || "").slice(0, 25);
+      // Text overlay (title)
+      const cap = (captions[i] || "").slice(0, 22);
       if (cap) {
-        const svg = `<svg width="${W}" height="40"><rect width="${W}" height="40" fill="rgba(0,0,0,0.7)"/><text x="10" y="28" font-size="16" fill="white" font-family="Arial">${cap.replace(/</g, "&lt;")}</text></svg>`;
+        const svg = `<svg width="${W}" height="40"><rect width="${W}" height="40" fill="rgba(0,0,0,0.7)"/><text x="10" y="28" font-size="15" fill="white" font-family="Arial">${cap.replace(/</g, "&lt;")}</text></svg>`;
         composites.push({ input: Buffer.from(svg), left: i * (W + PAD), top: H });
       }
+    }
+
+    // Rating badge on first image
+    if (rating && count > 0) {
+      const badgeColor = parseFloat(rating) >= 7 ? "#2ecc71" : parseFloat(rating) >= 5 ? "#f39c12" : "#e74c3c";
+      const badgeSvg = `<svg width="50" height="28"><rect width="50" height="28" rx="6" fill="${badgeColor}"/><text x="25" y="20" font-size="14" fill="white" font-family="Arial" text-anchor="middle">⭐${rating}</text></svg>`;
+      composites.push({ input: Buffer.from(badgeSvg), left: 4, top: 4 });
     }
 
     return await sharp({ create: { width: totalW, height: totalH, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } })
@@ -46,6 +53,53 @@ const TMDB_KEY = "7300351df93ae28d50e92aba76a55a3c";
 const TMDB_BASE = "https://api.themoviedb.org/3";
 const TMDB_IMG = "https://image.tmdb.org/t/p/w500";
 const VEGA_API = "https://rude-danell-first100-642ab0e0.koyeb.app";
+
+// --- Fuzzy search (Levenshtein distance) ---
+function levenshtein(a, b) {
+  const m = a.length, n = b.length;
+  const dp = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++)
+    for (let j = 1; j <= n; j++)
+      dp[i][j] = a[i-1] === b[j-1]
+        ? dp[i-1][j-1]
+        : 1 + Math.min(dp[i-1][j], dp[i][j-1], dp[i-1][j-1]);
+  return dp[m][n];
+}
+
+function fuzzyMatch(query, title) {
+  const q = query.toLowerCase().trim();
+  const t = title.toLowerCase();
+  // Exact substring match
+  if (t.includes(q)) return 1;
+  // Word-level match
+  const qWords = q.split(/\s+/);
+  const tWords = t.split(/\s+/);
+  let matched = 0;
+  for (const qw of qWords) {
+    for (const tw of tWords) {
+      if (tw.includes(qw) || qw.includes(tw)) { matched++; break; }
+      if (levenshtein(qw, tw) <= Math.max(1, Math.floor(qw.length * 0.3))) { matched++; break; }
+    }
+  }
+  return matched / qWords.length;
+}
+
+// --- Provider speed tracking ---
+const providerSpeed = {};
+function trackSpeed(prov, ms) {
+  if (!providerSpeed[prov]) providerSpeed[prov] = [];
+  providerSpeed[prov].push(ms);
+  if (providerSpeed[prov].length > 10) providerSpeed[prov].shift();
+}
+function getAvgSpeed(prov) {
+  const arr = providerSpeed[prov];
+  return arr?.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 99999;
+}
+function sortBySpeed(provs) {
+  return [...provs].sort((a, b) => getAvgSpeed(a) - getAvgSpeed(b));
+}
 const CINEPIX_API = "https://cinepix.top";
 const CONCURRENCY = 8;
 
@@ -206,24 +260,30 @@ async function aggregateSearch(q, searchPage = 0) {
   const targetProviders = ["vega", "4khdhub", "hdhub4u", "cinefreak"];
   const matched = allProviders.filter(p => targetProviders.includes(p.value) && p.modules?.includes("posts"));
 
-  // Search all 4 providers
+  // Sort by speed (fastest first)
+  const sorted = sortBySpeed(matched.map(p => p.value));
+  const sortedMatched = sorted.map(v => matched.find(p => p.value === v)).filter(Boolean);
+
+  // Search all providers in parallel with speed tracking
   const results = [];
-  for (const p of matched) {
+  const errors = [];
+  const promises = sortedMatched.map(async (p) => {
+    const start = Date.now();
     try {
       const r = await searchProvider(p, q);
+      trackSpeed(p.value, Date.now() - start);
       results.push(...r);
-    } catch {}
-  }
-
-  // Sort by relevance
-  const lowerQ = q.toLowerCase();
-  results.sort((a, b) => {
-    const aStart = (a.title || "").toLowerCase().startsWith(lowerQ) ? 0 : 1;
-    const bStart = (b.title || "").toLowerCase().startsWith(lowerQ) ? 0 : 1;
-    return aStart - bStart;
+    } catch (e) {
+      trackSpeed(p.value, Date.now() - start);
+      errors.push(p.value);
+    }
   });
+  await Promise.allSettled(promises);
 
-  return results.slice(0, 15);
+  // Sort by fuzzy relevance
+  results.sort((a, b) => fuzzyMatch(q, b.title) - fuzzyMatch(q, a.title));
+
+  return { results: results.slice(0, 20), errors };
 }
 
 async function getMeta(prov, link) {
@@ -288,9 +348,21 @@ bot.onText(/\/start/, async (msg) => {
 bot.onText(/\/commands/, async (msg) => {
   await showTyping(msg.chat.id);
   bot.sendMessage(msg.chat.id,
-    "*📖 Commands:*\n\n/start - শুরু\n/providers - provider লিস্ট\n/movie <নাম> - মুভি সার্চ\n/series <নাম> - সিরিজ সার্চ\n\nযেকোনো টেক্সট লিখলেও সার্চ হবে।",
+    "*📖 Commands:*\n\n/start - শুরু\n/providers - provider লিস্ট\n/quality <480p|720p|1080p> - পছন্দের quality\n\nযেকোনো টেক্সট লিখলেও সার্চ হবে।\nFuzzy search আছে — typo ধরবে।",
     { parse_mode: "Markdown" }
   );
+});
+
+// --- Quality preference ---
+const userQuality = {};
+bot.onText(/\/quality(.*)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const q = (match[1] || "").trim().toLowerCase();
+  if (!q || !["480p", "720p", "1080p"].includes(q)) {
+    return bot.sendMessage(chatId, "ব্যবহার: `/quality 1080p`\nঅপশন: 480p, 720p, 1080p", { parse_mode: "Markdown" });
+  }
+  userQuality[chatId] = q;
+  bot.sendMessage(chatId, `✅ পছন্দের quality: *${q}*`, { parse_mode: "Markdown" });
 });
 
 bot.onText(/\/providers/, async (msg) => {
@@ -339,7 +411,7 @@ async function handleSearch(chatId, query, forcedType, searchPage = 0) {
     const bangla = /bangla|bengali|বাংলা|বাঙালি/i.test(query);
 
     // Live search from all providers
-    const liveResults = await aggregateSearch(query, searchPage);
+    const { results: liveResults, errors: providerErrors } = await aggregateSearch(query, searchPage);
     let posts = liveResults.map(r => ({
       provider: r.prov,
       title: r.title,
@@ -364,16 +436,9 @@ async function handleSearch(chatId, query, forcedType, searchPage = 0) {
 
     const PROV_SHORT = { cinefreak: "CF", vega: "V", hdhub4u: "H4U", "4khdhub": "4K" };
 
-    // Relevance filter: query words must match in title
-    const queryWords = query.toLowerCase().split(/\s+/).filter(w => w.length > 2);
-    if (queryWords.length) {
-      const relevant = posts.filter(p => {
-        const t = p.title.toLowerCase();
-        const matchCount = queryWords.filter(w => t.includes(w)).length;
-        return matchCount >= Math.ceil(queryWords.length * 0.6);
-      });
-      if (relevant.length >= 1) posts = relevant;
-    }
+    // Fuzzy relevance filter
+    const relevant = posts.filter(p => fuzzyMatch(query, p.title) >= 0.4);
+    if (relevant.length >= 1) posts = relevant;
 
     // Collect unique images from results
     const seen = new Set();
@@ -383,15 +448,22 @@ async function handleSearch(chatId, query, forcedType, searchPage = 0) {
       if (p.image && !seen.has(p.image)) {
         seen.add(p.image);
         collageImages.push(p.image);
-        // Short title for overlay
         const shortTitle = p.title.replace(/\s*[-–|].*$/, "").trim().slice(0, 22);
         collageCaptions.push(shortTitle);
         if (collageImages.length === 3) break;
       }
     }
 
+    // Fetch TMDB rating for collage badge
+    let tmdbRating = "";
+    try {
+      const tmdb = await searchTMDB(query);
+      if (tmdb?.rating) tmdbRating = tmdb.rating;
+    } catch {}
+
     const banglaTag = bangla ? " [BD]" : "";
-    const text = `✅ *"${esc(query)}"*${banglaTag} - ${posts.length}টি result\n\nসিলেক্ট করো:`;
+    const errTag = providerErrors?.length ? `\n⚠️ ${providerErrors.join(", ")} fail` : "";
+    const text = `✅ *"${esc(query)}"*${banglaTag} - ${posts.length}টি result${errTag}\n\nসিলেক্ট করো:`;
 
     // Build buttons (max 15)
     const buttons = [];
@@ -410,9 +482,9 @@ async function handleSearch(chatId, query, forcedType, searchPage = 0) {
       buttons.push([{ text: `🔄 Load More (${posts.length}+ results)`, callback_data: `more:${moreId}` }]);
     }
 
-    // Try collage (need 2+ images)
-    if (collageImages.length >= 2) {
-      const collageBuf = await createCollage(collageImages, collageCaptions);
+    // Try collage (need 1+ images)
+    if (collageImages.length >= 1) {
+      const collageBuf = await createCollage(collageImages, collageCaptions, tmdbRating);
       if (collageBuf) {
         await bot.sendPhoto(chatId, collageBuf, {
           caption: text,
