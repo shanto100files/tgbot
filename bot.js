@@ -364,6 +364,17 @@ async function handleSearch(chatId, query, forcedType, searchPage = 0) {
 
     const PROV_SHORT = { cinefreak: "CF", vega: "V", hdhub4u: "H4U", "4khdhub": "4K" };
 
+    // Relevance filter: query words must match in title
+    const queryWords = query.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+    if (queryWords.length) {
+      const relevant = posts.filter(p => {
+        const t = p.title.toLowerCase();
+        const matchCount = queryWords.filter(w => t.includes(w)).length;
+        return matchCount >= Math.ceil(queryWords.length * 0.6);
+      });
+      if (relevant.length >= 1) posts = relevant;
+    }
+
     // Collect unique images from results
     const seen = new Set();
     const collageImages = [];
@@ -457,18 +468,7 @@ bot.on("callback_query", async (query) => {
       const { cards, cardIndex, query: q } = data;
       if (!cards || !cards[cardIndex]) return bot.answerCallbackQuery(query.id, { text: "⏰ Expired" });
 
-    const PROV_SHORT = { cinefreak: "CF", vega: "V", hdhub4u: "H4U", "4khdhub": "4K" };
-
-    // Relevance filter: query words must match in title
-    const queryWords = query.toLowerCase().split(/\s+/).filter(w => w.length > 2);
-    const relevant = posts.filter(p => {
-      const t = p.title.toLowerCase();
-      const matchCount = queryWords.filter(w => t.includes(w)).length;
-      return matchCount >= Math.ceil(queryWords.length * 0.6);
-    });
-
-    // Use relevant results if found, fallback to all
-    if (relevant.length >= 1) posts = relevant;
+      const PROV_SHORT = { cinefreak: "CF", vega: "V", hdhub4u: "H4U", "4khdhub": "4K" };
       const card = cards[cardIndex];
       const image = card.find(p => p.image)?.image;
 
