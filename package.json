@@ -6,18 +6,23 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
+    "bot": "node bot.js",
     "dev": "node --watch server.js",
+    "start:all": "node server.js && node bot.js",
     "build:providers": "node build-providers.js",
     "setup": "git clone --depth 1 https://github.com/vega-org/vega-providers.git _providers && cd _providers && npm install && npm run build",
     "update": "cd _providers && git pull && npm run build"
   },
   "dependencies": {
-    "express": "^4.21.2",
-    "cors": "^2.8.5",
     "axios": "^1.10.0",
+    "better-sqlite3": "^13.0.2",
     "cheerio": "^1.1.0",
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
     "express-rate-limit": "^7.5.0",
     "helmet": "^8.1.0",
+    "node-telegram-bot-api": "^1.2.0",
+    "sharp": "^0.35.3",
     "winston": "^3.17.0"
   },
   "engines": {

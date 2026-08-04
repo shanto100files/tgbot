@@ -13,6 +13,8 @@ import { createStreamRouter } from "./src/routes/stream.js";
 import { createEpisodesRouter } from "./src/routes/episodes.js";
 import { createResolveRouter } from "./src/routes/resolve.js";
 import { createHubcloudRouter } from "./src/routes/hubcloud.js";
+import { initDB, searchPosts, getStats, upsertPosts, searchPostsWithLinks, getDownloadLinks } from "./src/db.js";
+import { startAutoScrape, runScrape } from "./src/cron.js";
 
 const logger = createLogger();
 const app = express();
@@ -23,12 +25,13 @@ app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors({ origin: "*", methods: ["GET", "POST", "OPTIONS"] }));
 app.use(express.json());
 
-// Rate limiting
+// Rate limiting (skip localhost)
 const limiter = rateLimit({
   windowMs: 1 * 60 * 1000,
-  max: 100,
+  max: 5000,
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) => req.ip === "127.0.0.1" || req.ip === "::1" || req.ip === "::ffff:127.0.0.1",
   message: { error: "Too many requests, please try again later." },
 });
 app.use("/api/", limiter);
@@ -38,6 +41,9 @@ app.use((req, res, next) => {
   logger.info(`${req.method} ${req.url}`);
   next();
 });
+
+// --- Init DB ---
+initDB();
 
 // --- Provider Loader ---
 const providerLoader = new ProviderLoader(logger);
@@ -58,11 +64,47 @@ app.use("/api/episodes", createEpisodesRouter());
 app.use("/api/resolve", createResolveRouter());
 app.use("/api/hubcloud", createHubcloudRouter());
 
+// --- DB Search Endpoint ---
+app.get("/api/db/search", (req, res) => {
+  const { q, limit } = req.query;
+  if (!q) return res.json({ posts: [] });
+  const posts = searchPosts(q, parseInt(limit) || 50);
+  res.json({ posts, count: posts.length });
+});
+
+// --- DB Search with Download Links ---
+app.get("/api/db/searchfull", (req, res) => {
+  const { q, limit } = req.query;
+  if (!q) return res.json({ posts: [] });
+  const posts = searchPostsWithLinks(q, parseInt(limit) || 30);
+  res.json({ posts, count: posts.length });
+});
+
+// --- Get Download Links for a post ---
+app.get("/api/db/links", (req, res) => {
+  const { link } = req.query;
+  if (!link) return res.json({ links: [] });
+  const links = getDownloadLinks(link);
+  res.json({ links, count: links.length });
+});
+
+// --- DB Stats ---
+app.get("/api/db/stats", (req, res) => {
+  res.json(getStats());
+});
+
+// --- Manual Scrape Trigger ---
+app.get("/api/db/scrape", async (req, res) => {
+  const stats = await runScrape();
+  res.json(stats || { error: "Scrape failed or already running" });
+});
+
 // Health check
 app.get("/health", (req, res) => {
   res.json({
     status: "ok",
     providers: providerLoader.getProviderNames().length,
+    db: getStats(),
     timestamp: new Date().toISOString(),
   });
 });
@@ -81,6 +123,9 @@ app.use((req, res) => {
       "GET  /api/episodes/:provider?url=",
       "GET  /api/resolve?url=",
       "POST /api/resolve { url, provider }",
+      "GET  /api/db/search?q=&limit=",
+      "GET  /api/db/stats",
+      "GET  /api/db/scrape",
       "GET  /health",
     ],
   });
@@ -96,4 +141,7 @@ app.use((err, req, res, next) => {
 app.listen(PORT, "0.0.0.0", () => {
   logger.info(`🚀 Vega API Server running on http://localhost:${PORT}`);
   logger.info(`📡 Providers loaded: ${providerLoader.getProviderNames().length}`);
+
+  // Start auto-scrape (every 24 hours)
+  startAutoScrape(24);
 });

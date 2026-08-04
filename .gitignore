@@ -4,3 +4,11 @@ custom-providers/*/node_modules/
 logs/
 .env
 *.log
+cache.db
+cache.db-shm
+cache.db-wal
+_check.js
+check.cjs
+check_db.mjs
+test_*.mjs
+test_*.cjs

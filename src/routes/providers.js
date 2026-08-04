@@ -5,7 +5,21 @@ export function createProvidersRouter() {
 
   router.get("/", (req, res) => {
     const loader = req.app.locals.providerLoader;
-    const providers = loader.getManifest();
+    const manifest = loader.getManifest();
+    const allNames = loader.getProviderNames();
+
+    const providers = allNames.map((name) => {
+      const p = loader.getProvider(name);
+      const manifestEntry = manifest.find((m) => m.value === name);
+      return {
+        value: name,
+        display_name: p.displayName || manifestEntry?.display_name || name,
+        type: p.type || manifestEntry?.type || "custom",
+        disabled: p.disabled ?? manifestEntry?.disabled ?? false,
+        modules: Object.keys(p.modules),
+      };
+    });
+
     res.json(providers);
   });
 

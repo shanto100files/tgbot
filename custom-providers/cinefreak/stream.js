@@ -6,109 +6,112 @@ export async function getStream({ link, type, signal, providerContext }) {
 
   if (link.includes("generate.php")) {
     try {
-      // Step 1: Clean link - remove extra text, ensure valid URL
       let cleanLink = link.trim();
-      
-      // Remove any text after the base64 padding (= or ==)
-      const equalsIndex = cleanLink.indexOf("=");
-      if (equalsIndex !== -1) {
-        // Keep up to 2 padding chars and remove everything after
-        const afterEquals = cleanLink.substring(equalsIndex + 1);
-        const extraChars = afterEquals.replace(/[=]/g, "").length;
-        if (extraChars > 0) {
-          // Has extra chars after padding, likely bad input
-          cleanLink = cleanLink.substring(0, equalsIndex + 1);
-        }
-      }
-
-      // Ensure full URL
       if (!cleanLink.startsWith("http")) {
         cleanLink = `${BASE_URL}${cleanLink.startsWith("/") ? "" : "/"}${cleanLink}`;
       }
 
-      // Parse URL
       const urlObj = new URL(cleanLink);
       const id = urlObj.searchParams.get("id");
 
       if (!id) {
-        streams.push({ server: "CineFreak", link: cleanLink, type: "mp4", quality: "1080" });
-        return streams;
+        return [{ server: "CineFreak", link: cleanLink, type: "mp4" }];
       }
 
-      // Step 2: Decode base64 to get cinecloud URL
       const cinecloudUrl = Buffer.from(id, "base64").toString("utf-8");
 
-      // Step 3: Fetch cinecloud page
-      const res = await axios.get(cinecloudUrl, {
-        signal,
-        timeout: 20000,
-        headers: {
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-        },
-      });
+      // Try cinecloud page
+      try {
+        const res = await axios.get(cinecloudUrl, {
+          signal,
+          timeout: 15000,
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+            "Referer": BASE_URL + "/",
+          },
+          maxRedirects: 5,
+        });
 
-      const $ = cheerio.load(res.data);
+        const pageText = typeof res.data === "string" ? res.data : "";
 
-      // Step 4: Extract iframe src
-      const iframeSrc = $("iframe").attr("src");
+        // Check if 404
+        if (pageText.includes("404") || pageText.includes("File Not Found") || pageText.includes("File not found")) {
+          // cinecloud dead, try direct link format variations
+          const altUrls = [
+            cinecloudUrl.replace("/f/", "/s/"),
+            cinecloudUrl.replace("/f/", "/v/"),
+            cinecloudUrl.replace("new5.cinecloud.site", "new5.cinecloud.site").replace("/f/", "/d/"),
+          ];
 
-      if (iframeSrc) {
-        // Step 5: Parse the actual video URL from iframe params
-        const iframeUrl = new URL(iframeSrc);
-        const videoUrl = iframeUrl.searchParams.get("id");
+          for (const altUrl of altUrls) {
+            try {
+              const altRes = await axios.get(altUrl, { signal, timeout: 10000, headers: { "Referer": BASE_URL + "/" }, maxRedirects: 5 });
+              const altText = typeof altRes.data === "string" ? altRes.data : "";
+              if (!altText.includes("404") && !altText.includes("File Not Found")) {
+                const $alt = cheerio.load(altText);
+                const iframeSrc = $alt("iframe").attr("src");
+                if (iframeSrc) {
+                  const videoUrl = new URL(iframeSrc).searchParams.get("id") || iframeSrc;
+                  streams.push({ server: "CineFreak", link: decodeURIComponent(videoUrl), type: "mkv" });
+                  return streams;
+                }
+              }
+            } catch {}
+          }
 
-        if (videoUrl) {
-          const cleanUrl = decodeURIComponent(videoUrl);
-
-          streams.push({
-            server: "CineFreak R2",
-            link: cleanUrl,
-            type: cleanUrl.includes(".mkv") ? "mkv" : "mp4",
-            quality: "720",
-            headers: {
-              Referer: "https://stream.yagaverse.net/",
-              Origin: "https://stream.yagaverse.net",
-            },
-          });
+          return streams;
         }
 
-        // Get subtitle if available
-        const subParam = iframeUrl.searchParams.get("sub[0]");
-        if (subParam) {
-          streams.push({
-            server: "Subtitle",
-            link: decodeURIComponent(subParam),
-            type: "srt",
-            quality: "subtitle",
-          });
+        const $ = cheerio.load(pageText);
+
+        // Extract iframe
+        const iframeSrc = $("iframe").attr("src");
+        if (iframeSrc) {
+          try {
+            const iframeUrl = new URL(iframeSrc);
+            const videoUrl = iframeUrl.searchParams.get("id");
+            if (videoUrl) {
+              streams.push({
+                server: "CineFreak",
+                link: decodeURIComponent(videoUrl),
+                type: decodeURIComponent(videoUrl).includes(".mkv") ? "mkv" : "mp4",
+              });
+            }
+            const subParam = iframeUrl.searchParams.get("sub[0]");
+            if (subParam) {
+              streams.push({ server: "Subtitle", link: decodeURIComponent(subParam), type: "srt" });
+            }
+          } catch {}
         }
+
+        // Check for direct video/source tags
+        const videoSrc = $("video source, video").attr("src");
+        if (videoSrc) {
+          streams.push({ server: "CineFreak", link: videoSrc, type: "mp4" });
+        }
+
+        // Check for download links in buttons
+        $("a[href]").each((i, el) => {
+          const href = $(el).attr("href") || "";
+          if (href.includes("pixeldrain") || href.includes("r2.dev") || href.includes("cloudflarestorage") || href.includes("googleusercontent") || href.includes(".mkv") || href.includes(".mp4")) {
+            streams.push({ server: "CineFreak", link: href, type: href.includes(".mp4") ? "mp4" : "mkv" });
+          }
+        });
+      } catch (fetchErr) {
+        // cinecloud fetch failed
       }
 
-      // If no streams found, return the cinecloud URL as fallback
-      if (streams.length === 0) {
-        streams.push({
-          server: "CineFreak Cloud",
-          link: cinecloudUrl,
-          type: "mp4",
-          quality: "720",
-        });
+      if (!streams.length) {
+        streams.push({ server: "CineFreak (Storage Down)", link: cinecloudUrl, type: "mp4" });
       }
     } catch (err) {
-      streams.push({
-        server: "CineFreak",
-        link: link,
-        type: "mp4",
-        quality: "1080",
-        error: err.message,
-      });
+      streams.push({ server: "CineFreak", link: link, type: "mp4" });
     }
   } else {
     streams.push({
       server: "CineFreak",
       link: link.startsWith("http") ? link : `${BASE_URL}${link}`,
       type: "mp4",
-      quality: "1080",
     });
   }
 
